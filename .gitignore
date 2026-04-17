@@ -1,0 +1,29 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Local generated / data
+backend/data/
+backend/static/images/
+_sample_docx/
+
+# Business documents (default: do not upload)
+预案/
+
+# Logs
+*.log

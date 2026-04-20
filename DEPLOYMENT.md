@@ -237,3 +237,73 @@ backend/static/images/
 - `sync_plans.bat`
 
 这样在新电脑上可以双击启动，而不需要每次手输命令。
+
+## 13. 一键启动脚本
+
+项目根目录已经提供了以下 Windows 启动脚本：
+
+- `start_backend.bat`
+- `start_frontend.bat`
+- `start_all.bat`
+
+### 13.1 单独启动后端
+
+双击：
+
+```text
+start_backend.bat
+```
+
+作用：
+
+- 自动进入 `backend/`
+- 启动 FastAPI 后端服务
+- 默认监听：
+
+```text
+http://127.0.0.1:8000
+```
+
+### 13.2 单独启动前端
+
+双击：
+
+```text
+start_frontend.bat
+```
+
+作用：
+
+- 自动进入 `frontend/`
+- 若未安装依赖，会先执行 `npm install`
+- 然后启动前端开发服务
+
+### 13.3 一键同时启动前后端
+
+双击：
+
+```text
+start_all.bat
+```
+
+作用：
+
+- 自动打开两个窗口
+- 一个窗口启动后端
+- 一个窗口启动前端
+
+启动完成后，浏览器访问：
+
+```text
+http://localhost:5173
+```
+
+### 13.4 客户使用建议
+
+如果客户只是日常使用系统，推荐直接双击：
+
+```text
+start_all.bat
+```
+
+这样不需要手动输入任何命令。

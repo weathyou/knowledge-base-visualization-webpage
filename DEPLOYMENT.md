@@ -245,6 +245,7 @@ backend/static/images/
 - `start_backend.bat`
 - `start_frontend.bat`
 - `start_all.bat`
+- `sync_plans.bat`
 
 ### 13.1 单独启动后端
 
@@ -307,3 +308,21 @@ start_all.bat
 ```
 
 这样不需要手动输入任何命令。
+
+### 13.5 手动同步预案目录
+
+如果客户新增了 `.doc` 预案文件，可以直接双击：
+
+```text
+sync_plans.bat
+```
+
+作用：
+
+- 向本地后端发送 `POST /api/sync`
+- 触发预案目录重新扫描与同步
+
+注意：
+
+- 运行前请确保后端已经启动
+- 如果后端未启动，同步会失败

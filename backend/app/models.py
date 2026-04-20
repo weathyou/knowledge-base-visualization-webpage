@@ -20,6 +20,8 @@ class Plan(Base):
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     sync_status: Mapped[str] = mapped_column(String(32), default="success")
     sync_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_version: Mapped[int] = mapped_column(Integer, default=1)
+    content_source_mode: Mapped[str] = mapped_column(String(32), default="database")
 
     details: Mapped[list["PlanDetail"]] = relationship(
         back_populates="plan",
@@ -30,6 +32,11 @@ class Plan(Base):
         back_populates="plan",
         cascade="all, delete-orphan",
         order_by="PlanImage.id",
+    )
+    pages: Mapped[list["PlanPage"]] = relationship(
+        back_populates="plan",
+        cascade="all, delete-orphan",
+        order_by="PlanPage.sort_order",
     )
 
     @property
@@ -102,3 +109,78 @@ class PlanImage(Base):
     doc_media_path: Mapped[str] = mapped_column(String(255))
 
     plan: Mapped["Plan"] = relationship(back_populates="images")
+
+
+class PlanPage(Base):
+    __tablename__ = "plan_pages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("plans.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(128), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    parent_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    plan: Mapped["Plan"] = relationship(back_populates="pages")
+    blocks: Mapped[list["PlanBlock"]] = relationship(
+        back_populates="page",
+        cascade="all, delete-orphan",
+        order_by="PlanBlock.sort_order",
+    )
+
+
+class PlanBlock(Base):
+    __tablename__ = "plan_blocks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    page_id: Mapped[int] = mapped_column(ForeignKey("plan_pages.id", ondelete="CASCADE"), index=True)
+    type: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(255))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    page: Mapped["PlanPage"] = relationship(back_populates="blocks")
+    cells: Mapped[list["PlanBlockCell"]] = relationship(
+        back_populates="block",
+        cascade="all, delete-orphan",
+        order_by="PlanBlockCell.row_index, PlanBlockCell.cell_order",
+    )
+    images: Mapped[list["PlanBlockImage"]] = relationship(
+        back_populates="block",
+        cascade="all, delete-orphan",
+        order_by="PlanBlockImage.sort_order",
+    )
+
+
+class PlanBlockCell(Base):
+    __tablename__ = "plan_block_cells"
+    __table_args__ = (
+        UniqueConstraint("block_id", "row_index", "cell_order", name="uq_plan_block_cell_position"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    block_id: Mapped[int] = mapped_column(ForeignKey("plan_blocks.id", ondelete="CASCADE"), index=True)
+    row_index: Mapped[int] = mapped_column(Integer)
+    cell_order: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text, default="")
+    colspan: Mapped[int] = mapped_column(Integer, default=1)
+    rowspan: Mapped[int] = mapped_column(Integer, default=1)
+    table_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_row_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_cell_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_editable: Mapped[int] = mapped_column(Integer, default=0)
+
+    block: Mapped["PlanBlock"] = relationship(back_populates="cells")
+
+
+class PlanBlockImage(Base):
+    __tablename__ = "plan_block_images"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    block_id: Mapped[int] = mapped_column(ForeignKey("plan_blocks.id", ondelete="CASCADE"), index=True)
+    image_name: Mapped[str] = mapped_column(String(255))
+    image_path: Mapped[str] = mapped_column(String(1024))
+    doc_media_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    block: Mapped["PlanBlock"] = relationship(back_populates="images")

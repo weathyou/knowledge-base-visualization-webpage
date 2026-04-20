@@ -54,3 +54,7 @@ export const updateDocumentCell = async (planId, payload) => {
 export const syncPlans = async () => {
   return requestWithOrigins({ url: '/api/sync', method: 'post', timeoutMs: 180000 })
 }
+
+export const reimportPlan = async (planId) => {
+  return requestWithOrigins({ url: `/api/plans/${planId}/reimport`, method: 'post', timeoutMs: 180000 })
+}

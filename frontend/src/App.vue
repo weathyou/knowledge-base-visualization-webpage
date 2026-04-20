@@ -89,6 +89,13 @@
           >
             {{ syncing ? '同步中...' : '同步预案目录' }}
           </button>
+          <button
+            class="rounded border border-cyan-300/30 bg-slate-900/65 px-4 py-2 text-sm text-cyan-100 transition hover:border-cyan-300/55"
+            :disabled="!selectedPlanId || reimporting"
+            @click="handleReimportCurrent"
+          >
+            {{ reimporting ? '重新导入中...' : '重新导入当前预案' }}
+          </button>
         </div>
       </div>
     </header>
@@ -274,8 +281,26 @@
                         :colspan="cell.colspan || 1"
                         :rowspan="cell.rowspan || 1"
                         class="border border-cyan-300/15 bg-slate-950/35 px-3 py-3 align-top text-sm leading-7 text-cyan-50 whitespace-pre-wrap break-words"
+                        :class="[
+                          cell.is_editable ? 'editable-cell cursor-text hover:bg-cyan-400/5' : '',
+                          isEditingCell(cell) ? 'editing-cell' : '',
+                          isSavedCell(cell) ? 'saved-cell' : '',
+                        ]"
+                        @dblclick="startEditCell(cell)"
                       >
-                        {{ cell.text || ' ' }}
+                        <template v-if="isEditingCell(cell)">
+                          <textarea
+                            v-model="editingCellText"
+                            class="min-h-[88px] w-full rounded border border-cyan-300/20 bg-slate-950/80 px-3 py-2 text-sm text-cyan-50 outline-none"
+                          ></textarea>
+                          <div class="mt-2 flex gap-2">
+                            <button class="rounded border border-cyan-300/30 bg-cyan-400/10 px-3 py-1 text-xs text-cyan-50" @click="saveCellEdit">保存</button>
+                            <button class="rounded border border-cyan-300/20 bg-slate-900/60 px-3 py-1 text-xs text-cyan-100" @click="cancelCellEdit">取消</button>
+                          </div>
+                        </template>
+                        <template v-else>
+                          {{ cell.text || ' ' }}
+                        </template>
                       </td>
                     </tr>
                   </tbody>
@@ -333,7 +358,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { getPlanDocument, getPlans, syncPlans } from './api'
+import { getPlanDocument, getPlans, reimportPlan, syncPlans, updateDocumentCell } from './api'
 
 const apiBase = ''
 const plans = ref([])
@@ -342,6 +367,7 @@ const selectedPlanId = ref(null)
 const planKeyword = ref('')
 const loading = ref(false)
 const syncing = ref(false)
+const reimporting = ref(false)
 const previewImage = ref('')
 const viewMode = ref('home')
 const activeNavKey = ref('basic')
@@ -351,6 +377,9 @@ const dropdownOpen = ref(false)
 const expandedPaths = ref([])
 const dropdownRef = ref(null)
 const statusMessage = ref('')
+const editingCell = ref(null)
+const editingCellText = ref('')
+const savedCellKey = ref('')
 
 const activeButtonClass = 'border-cyan-200 bg-cyan-400/22 shadow-neon'
 const defaultButtonClass = 'border-cyan-500/25 bg-slate-900/55 hover:border-cyan-300/55 hover:bg-cyan-400/10'
@@ -575,6 +604,80 @@ const handleSync = async () => {
     statusMessage.value = error?.response?.data?.detail || error?.message || '同步失败，请检查后端日志。'
   } finally {
     syncing.value = false
+  }
+}
+
+const handleReimportCurrent = async () => {
+  if (!selectedPlanId.value) return
+  reimporting.value = true
+  statusMessage.value = '正在重新导入当前预案，将使用原始 Word 内容覆盖数据库主存...'
+  try {
+    await reimportPlan(selectedPlanId.value)
+    await loadPlans()
+    await loadDocument(selectedPlanId.value)
+    statusMessage.value = '当前预案已重新导入。'
+  } catch (error) {
+    statusMessage.value = error?.response?.data?.detail || error?.message || '重新导入失败。'
+  } finally {
+    reimporting.value = false
+  }
+}
+
+const startEditCell = (cell) => {
+  if (!cell.is_editable) {
+    statusMessage.value = '当前单元格不允许编辑。'
+    return
+  }
+  editingCell.value = {
+    block_id: cell.block_id,
+    row_index: cell.row_index,
+    cell_order: cell.cell_order,
+  }
+  editingCellText.value = cell.text || ''
+}
+
+const isEditingCell = (cell) => {
+  return (
+    editingCell.value &&
+    editingCell.value.block_id === cell.block_id &&
+    editingCell.value.row_index === cell.row_index &&
+    editingCell.value.cell_order === cell.cell_order
+  )
+}
+
+const buildCellKey = (cell) => `${cell.block_id}-${cell.row_index}-${cell.cell_order}`
+
+const isSavedCell = (cell) => savedCellKey.value === buildCellKey(cell)
+
+const cancelCellEdit = () => {
+  editingCell.value = null
+  editingCellText.value = ''
+}
+
+const saveCellEdit = async () => {
+  if (!selectedPlanId.value || !editingCell.value) return
+  loading.value = true
+  const pageKey = activeNavKey.value
+  try {
+    await updateDocumentCell(selectedPlanId.value, {
+      block_id: editingCell.value.block_id,
+      row_index: editingCell.value.row_index,
+      cell_order: editingCell.value.cell_order,
+      text: editingCellText.value,
+    })
+    savedCellKey.value = `${editingCell.value.block_id}-${editingCell.value.row_index}-${editingCell.value.cell_order}`
+    await loadDocument(selectedPlanId.value)
+    activeNavKey.value = pageKey
+    viewMode.value = 'page'
+    statusMessage.value = '内容已保存到数据库主存。'
+  } catch (error) {
+    statusMessage.value = error?.response?.data?.detail || error?.message || '保存失败。'
+  } finally {
+    loading.value = false
+    cancelCellEdit()
+    window.setTimeout(() => {
+      savedCellKey.value = ''
+    }, 1800)
   }
 }
 

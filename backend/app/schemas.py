@@ -22,6 +22,8 @@ class PlanListItem(BaseModel):
     brigade: str | None
     battalion: str | None
     station: str | None
+    content_version: int
+    content_source_mode: str
 
 
 class PlanDetailItem(BaseModel):
@@ -63,9 +65,12 @@ class DocumentTableCell(BaseModel):
     text: str
     colspan: int = 1
     rowspan: int = 1
+    block_id: int | None = None
+    cell_order: int | None = None
     table_index: int | None = None
     row_index: int | None = None
     cell_index: int | None = None
+    is_editable: int = 0
 
 
 class DocumentBlock(BaseModel):
@@ -97,9 +102,9 @@ class PlanDocumentResponse(BaseModel):
 
 
 class UpdateCellRequest(BaseModel):
-    table_index: int
+    block_id: int
     row_index: int
-    cell_index: int
+    cell_order: int
     text: str
 
 

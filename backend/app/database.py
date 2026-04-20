@@ -29,3 +29,12 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def ensure_sqlite_schema() -> None:
+    with engine.begin() as conn:
+        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(plans)").fetchall()}
+        if "content_version" not in existing:
+            conn.exec_driver_sql("ALTER TABLE plans ADD COLUMN content_version INTEGER DEFAULT 1")
+        if "content_source_mode" not in existing:
+            conn.exec_driver_sql("ALTER TABLE plans ADD COLUMN content_source_mode VARCHAR(32) DEFAULT 'database'")

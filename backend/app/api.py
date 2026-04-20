@@ -1,6 +1,5 @@
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, HTTPException
+from pathlib import Path
 from sqlalchemy.orm import Session, selectinload
 
 from .database import get_db
@@ -17,7 +16,7 @@ from .schemas import (
 )
 from .services.category_manager import build_category_tree, ensure_category_folders, move_plan_to_category
 from .services.doc_editor import DocEditError, update_plan_cell
-from .services.document_view import build_plan_document
+from .services.document_view import build_plan_document_from_db
 from .services.sync import sync_plan_directory, sync_single_plan
 
 
@@ -45,7 +44,7 @@ def get_plan(plan_id: int, db: Session = Depends(get_db)):
 @router.get("/plans/{plan_id}/document", response_model=PlanDocumentResponse)
 def get_plan_document(plan_id: int, db: Session = Depends(get_db)):
     try:
-        return build_plan_document(db, plan_id)
+        return build_plan_document_from_db(db, plan_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -55,6 +54,14 @@ def get_plan_document(plan_id: int, db: Session = Depends(get_db)):
 @router.post("/sync", response_model=SyncResult)
 def sync_plans(db: Session = Depends(get_db)):
     return sync_plan_directory(db)
+
+
+@router.post("/plans/{plan_id}/reimport", response_model=SyncResult)
+def reimport_plan(plan_id: int, db: Session = Depends(get_db)):
+    plan = db.query(Plan).filter(Plan.id == plan_id).one_or_none()
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return sync_single_plan(db, Path(plan.source_doc_path))
 
 
 @router.get("/categories", response_model=CategoryTreeResponse)
@@ -87,9 +94,9 @@ def update_document_cell(plan_id: int, payload: UpdateCellRequest, db: Session =
         return update_plan_cell(
             db,
             plan_id=plan_id,
-            table_index=payload.table_index,
+            block_id=payload.block_id,
             row_index=payload.row_index,
-            cell_index=payload.cell_index,
+            cell_order=payload.cell_order,
             text=payload.text,
         )
     except DocEditError as exc:

@@ -5,9 +5,9 @@ from zipfile import ZipFile
 from xml.etree import ElementTree as ET
 
 from docx import Document
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from ..models import Plan, PlanImage
+from ..models import Plan, PlanBlock, PlanBlockCell, PlanBlockImage, PlanImage, PlanPage
 from ..schemas import DocumentBlock, DocumentNavItem, DocumentPage, DocumentTableCell, PlanDocumentResponse
 
 
@@ -54,6 +54,57 @@ def _table_cell_text(tc) -> str:
     return _normalize("".join(texts))
 
 
+def _is_editable_cell(text: str, colspan: int, rowspan: int) -> int:
+    blocked = {
+        "基本情况",
+        "单位基本情况",
+        "单位内部主要消防设施",
+        "重点部位情况",
+        "重点提示",
+        "风险评估",
+        "灾情假设",
+        "现场通信",
+        "首战力量部署",
+        "增援力量部署",
+    }
+    if not text.strip():
+        return 0
+    if rowspan > 1:
+        return 0
+    if colspan > 4:
+        return 0
+    if text.strip() in blocked:
+        return 0
+    return 1
+
+
+def _apply_value_cell_editability(row_cells: list[DocumentTableCell]) -> None:
+    meaningful = [(idx, cell) for idx, cell in enumerate(row_cells) if cell.text.strip()]
+    if not meaningful:
+        return
+
+    # Single long text cells are usually free-form content and should remain editable.
+    if len(meaningful) == 1:
+        idx, cell = meaningful[0]
+        cell.is_editable = 1 if len(cell.text.strip()) > 8 else 0
+        return
+
+    start = 0
+    first_cell = meaningful[0][1]
+    if first_cell.rowspan > 1:
+        first_cell.is_editable = 0
+        start = 1
+
+    for pos, (idx, cell) in enumerate(meaningful[start:], start=0):
+        # Alternate label/value pairs: value cells are every second logical item.
+        cell.is_editable = 1 if pos % 2 == 1 else 0
+
+    # Keep empty placeholders and structural cells readonly.
+    for cell in row_cells:
+        if not cell.text.strip():
+            cell.is_editable = 0
+
+
 def _display_table(table, table_index: int) -> list[list[DocumentTableCell]]:
     rendered: list[list[DocumentTableCell]] = []
     active_merges: dict[int, DocumentTableCell] = {}
@@ -61,7 +112,8 @@ def _display_table(table, table_index: int) -> list[list[DocumentTableCell]]:
     for row_index, tr in enumerate(table._tbl.tr_lst):
         row_cells: list[DocumentTableCell] = []
         col_index = 0
-        for _, tc in enumerate(tr.tc_lst):
+        cell_order = 0
+        for tc in tr.tc_lst:
             while col_index in active_merges and tc.tcPr is not None and tc.tcPr.vMerge is None:
                 active_merges.pop(col_index, None)
                 col_index += 1
@@ -81,9 +133,12 @@ def _display_table(table, table_index: int) -> list[list[DocumentTableCell]]:
                 text=text,
                 colspan=colspan,
                 rowspan=1,
+                block_id=None,
+                cell_order=cell_order,
                 table_index=table_index,
                 row_index=row_index,
                 cell_index=col_index,
+                is_editable=_is_editable_cell(text, colspan, 1),
             )
             row_cells.append(cell)
 
@@ -95,8 +150,10 @@ def _display_table(table, table_index: int) -> list[list[DocumentTableCell]]:
                     active_merges.pop(col_index + offset, None)
 
             col_index += colspan
+            cell_order += 1
 
         if row_cells:
+            _apply_value_cell_editability(row_cells)
             rendered.append(row_cells)
 
     return rendered
@@ -104,10 +161,6 @@ def _display_table(table, table_index: int) -> list[list[DocumentTableCell]]:
 
 def _rows_to_block(title: str, rows: list[list[DocumentTableCell]]) -> DocumentBlock:
     return DocumentBlock(type="table", title=title, rows=rows)
-
-
-def _filter_table_rows(rows: list[list[str]], predicate) -> list[list[str]]:
-    return [row for row in rows if row and predicate(_normalize(row[0]))]
 
 
 def _table_slice(rows: list[list[str]], start_keywords: tuple[str, ...], end_keywords: tuple[str, ...]) -> list[list[str]]:
@@ -140,37 +193,8 @@ def _table_slice_indices(rows: list[list[str]], start_keywords: tuple[str, ...],
     return start_index, end_index
 
 
-def _categorize_images(images: list[PlanImage]) -> dict[str, list[PlanImage]]:
-    ordered = sorted(images, key=lambda item: item.image_name)
-    categories = {
-        "行车路线图": [],
-        "单位总平面图": [],
-        "水源图": [],
-        "楼层平面图": [],
-        "首战力量部署图": [],
-        "增援力量部署图": [],
-    }
-    if not ordered:
-        return categories
-
-    if len(ordered) >= 1:
-        categories["行车路线图"] = [ordered[0]]
-    if len(ordered) >= 2:
-        categories["单位总平面图"] = [ordered[1]]
-    if len(ordered) >= 3:
-        categories["水源图"] = [ordered[2]]
-
-    if len(ordered) >= 6:
-        categories["楼层平面图"] = ordered[3:-2]
-        categories["首战力量部署图"] = [ordered[-2]]
-        categories["增援力量部署图"] = [ordered[-1]]
-    else:
-        categories["楼层平面图"] = ordered[3:]
-    return categories
-
-
-def _image_block(title: str, images: list[PlanImage]) -> DocumentBlock:
-    return DocumentBlock(type="image_gallery", title=title, images=images)
+def _image_block(title: str, images: list[PlanImage] | list[PlanBlockImage]) -> DocumentBlock:
+    return DocumentBlock(type="image_gallery", title=title, images=list(images))
 
 
 def _rows_to_plain_text(rows: list[list[DocumentTableCell]]) -> list[list[str]]:
@@ -225,50 +249,21 @@ def _extract_image_categories(docx_path: Path, images: list[PlanImage]) -> dict[
         }
         r_ns = "{%s}id" % ns["r"]
 
-        image_sizes: dict[str, tuple[int, int]] = {}
-        try:
-            from PIL import Image
-            import io
-
-            Image.MAX_IMAGE_PIXELS = None
-            for media_path in rel_map.values():
-                try:
-                    with archive.open(media_path) as src:
-                        img = Image.open(io.BytesIO(src.read()))
-                        image_sizes[media_path] = img.size
-                except Exception:
-                    continue
-        except Exception:
-            image_sizes = {}
-
-        rid_usage: dict[str, int] = {}
         pending_category: str | None = None
 
         def filtered_media_paths(rids: list[str]) -> list[str]:
-            media_paths = [rel_map[rid] for rid in rids if rid in rel_map]
-            unique_paths: list[str] = []
-            for media_path in media_paths:
-                width, height = image_sizes.get(media_path, (1000, 1000))
-                if width < 120 or height < 120:
-                    continue
-                unique_paths.append(media_path)
-            if len(unique_paths) > 1:
-                unique_paths = [path for path in unique_paths if sum(1 for rid, mp in rel_map.items() if mp == path and rid_usage.get(rid, 0) <= 1)]
-            return unique_paths or media_paths
+            return [rel_map[rid] for rid in rids if rid in rel_map]
 
         body = document_root.find("w:body", ns)
         if body is None:
             return categories
 
-        children = list(body)
-        for child in children:
+        for child in list(body):
             tag = child.tag.split("}")[-1]
             if tag == "p":
                 text = _normalize("".join(node.text or "" for node in child.findall(".//w:t", ns)))
                 rids = [node.attrib.get(r_ns) for node in child.findall(".//v:imagedata", ns)]
                 rids = [rid for rid in rids if rid]
-                for rid in rids:
-                    rid_usage[rid] = rid_usage.get(rid, 0) + 1
                 category = _match_image_category(text)
                 if rids and pending_category:
                     for media_path in filtered_media_paths(rids):
@@ -285,12 +280,12 @@ def _extract_image_categories(docx_path: Path, images: list[PlanImage]) -> dict[
 
             if tag == "tbl":
                 for tr in child.findall("./w:tr", ns):
-                    row_text = _normalize(" ".join(_normalize("".join(node.text or "" for node in tc.findall('.//w:t', ns))) for tc in tr.findall("./w:tc", ns)))
+                    row_text = _normalize(
+                        " ".join(_normalize("".join(node.text or "" for node in tc.findall(".//w:t", ns))) for tc in tr.findall("./w:tc", ns))
+                    )
                     category = _match_image_category(row_text)
                     rids = [node.attrib.get(r_ns) for node in tr.findall(".//v:imagedata", ns)]
                     rids = [rid for rid in rids if rid]
-                    for rid in rids:
-                        rid_usage[rid] = rid_usage.get(rid, 0) + 1
                     if category and rids:
                         for media_path in filtered_media_paths(rids):
                             image = image_by_media.get(media_path)
@@ -300,8 +295,7 @@ def _extract_image_categories(docx_path: Path, images: list[PlanImage]) -> dict[
     return categories
 
 
-def build_plan_document(session: Session, plan_id: int) -> PlanDocumentResponse:
-    plan = session.query(Plan).filter(Plan.id == plan_id).one()
+def build_plan_document_from_source(plan: Plan, images: list[PlanImage]) -> PlanDocumentResponse:
     if not plan.source_docx_path:
         raise FileNotFoundError("该预案未生成 docx 缓存")
 
@@ -310,7 +304,6 @@ def build_plan_document(session: Session, plan_id: int) -> PlanDocumentResponse:
     tables = [_display_table(table, table_index) for table_index, table in enumerate(document.tables)]
     basic_table = tables[0] if tables else []
     assist_table = tables[1] if len(tables) > 1 else []
-    images = session.query(PlanImage).filter(PlanImage.plan_id == plan.id).order_by(PlanImage.id.asc()).all()
     image_categories = _extract_image_categories(docx_path, images)
 
     basic_table_plain = _rows_to_plain_text(basic_table)
@@ -395,6 +388,145 @@ def build_plan_document(session: Session, plan_id: int) -> PlanDocumentResponse:
             blocks=[_rows_to_block("增援力量部署", reinforce_rows), _image_block("增援力量部署图", image_categories["增援力量部署图"])],
         ),
     ]
+
+    navigation = [
+        DocumentNavItem(
+            key=item["key"],
+            title=item["title"],
+            children=[DocumentNavItem(**child) for child in item.get("children", [])],
+        )
+        for item in NAVIGATION
+    ]
+
+    return PlanDocumentResponse(
+        plan_id=plan.id,
+        plan_name=plan.name,
+        pages=pages,
+        navigation=navigation,
+    )
+
+
+def persist_plan_document(session: Session, plan: Plan, document_data: PlanDocumentResponse) -> None:
+    session.query(PlanPage).filter(PlanPage.plan_id == plan.id).delete()
+    session.flush()
+
+    for page_index, page in enumerate(document_data.pages):
+        page_model = PlanPage(
+            plan_id=plan.id,
+            key=page.key,
+            title=page.title,
+            parent_key=page.parent_key,
+            sort_order=page_index,
+        )
+        session.add(page_model)
+        session.flush()
+
+        for block_index, block in enumerate(page.blocks):
+            block_model = PlanBlock(
+                page_id=page_model.id,
+                type=block.type,
+                title=block.title,
+                sort_order=block_index,
+                content=block.content,
+            )
+            session.add(block_model)
+            session.flush()
+
+            for row_index, row in enumerate(block.rows or []):
+                for cell_order, cell in enumerate(row):
+                    session.add(
+                        PlanBlockCell(
+                            block_id=block_model.id,
+                            row_index=row_index,
+                            cell_order=cell_order,
+                            text=cell.text,
+                            colspan=cell.colspan,
+                            rowspan=cell.rowspan,
+                            table_index=cell.table_index,
+                            source_row_index=cell.row_index,
+                            source_cell_index=cell.cell_index,
+                            is_editable=cell.is_editable,
+                        )
+                    )
+
+            for image_index, image in enumerate(block.images or []):
+                session.add(
+                    PlanBlockImage(
+                        block_id=block_model.id,
+                        image_name=image.image_name,
+                        image_path=image.image_path,
+                        doc_media_path=image.doc_media_path,
+                        sort_order=image_index,
+                    )
+                )
+
+
+def build_plan_document_from_db(session: Session, plan_id: int) -> PlanDocumentResponse:
+    query = (
+        session.query(Plan)
+        .options(
+            selectinload(Plan.pages)
+            .selectinload(PlanPage.blocks)
+            .selectinload(PlanBlock.cells),
+            selectinload(Plan.pages)
+            .selectinload(PlanPage.blocks)
+            .selectinload(PlanBlock.images),
+        )
+        .filter(Plan.id == plan_id)
+    )
+    plan = query.one()
+
+    if not plan.pages:
+        images = session.query(PlanImage).filter(PlanImage.plan_id == plan.id).order_by(PlanImage.id.asc()).all()
+        if not images and not plan.source_docx_path:
+            raise FileNotFoundError("该预案尚未生成数据库主存内容")
+        document_data = build_plan_document_from_source(plan, images)
+        persist_plan_document(session, plan, document_data)
+        session.commit()
+        plan = query.one()
+
+    pages: list[DocumentPage] = []
+    for page in sorted(plan.pages, key=lambda item: item.sort_order):
+        blocks: list[DocumentBlock] = []
+        for block in sorted(page.blocks, key=lambda item: item.sort_order):
+            rows: list[list[DocumentTableCell]] = []
+            if block.type == "table":
+                row_map: dict[int, list[DocumentTableCell]] = {}
+                for cell in sorted(block.cells, key=lambda item: (item.row_index, item.cell_order)):
+                    row_map.setdefault(cell.row_index, []).append(
+                        DocumentTableCell(
+                            text=cell.text,
+                            colspan=cell.colspan,
+                            rowspan=cell.rowspan,
+                            block_id=block.id,
+                            cell_order=cell.cell_order,
+                            table_index=cell.table_index,
+                            row_index=cell.row_index,
+                            cell_index=cell.source_cell_index,
+                            is_editable=cell.is_editable,
+                        )
+                    )
+                rows = [row_map[index] for index in sorted(row_map)]
+                for row in rows:
+                    _apply_value_cell_editability(row)
+
+            blocks.append(
+                DocumentBlock(
+                    type=block.type,
+                    title=block.title,
+                    rows=rows or None,
+                    content=block.content,
+                    images=list(block.images) or None,
+                )
+            )
+        pages.append(
+            DocumentPage(
+                key=page.key,
+                title=page.title,
+                parent_key=page.parent_key,
+                blocks=blocks,
+            )
+        )
 
     navigation = [
         DocumentNavItem(

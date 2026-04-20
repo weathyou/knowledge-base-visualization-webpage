@@ -4,11 +4,12 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import router
 from .config import STATIC_DIR, ensure_directories
-from .database import Base, engine
+from .database import Base, engine, ensure_sqlite_schema
 
 
 ensure_directories()
 Base.metadata.create_all(bind=engine)
+ensure_sqlite_schema()
 
 app = FastAPI(title="消防智能场景预案管理系统", version="1.0.0")
 app.add_middleware(
